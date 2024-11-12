@@ -27,7 +27,7 @@ class BotContext:
             format='%(asctime)s - %(levelname)s - %(message)s'
         )
 
-        # Form URLs
+        # Form URLs with original format that was working
         self.forms_urls = {
             'qualified_investor': "https://movne-global.streamlit.app/הצהרת_משקיע_כשיר",
             'marketing_agreement': "https://movne-global.streamlit.app/הסכם_שיווק_השקעות"
@@ -231,7 +231,8 @@ class BotContext:
                 system=system_prompt
             )
             
-            bot_response = response.content[0].text if hasattr(response, 'content') else "מצטער, לא הצלחתי להבין. אנא נסה שוב."
+            # Get the response text from the new API structure
+            bot_response = response.content[0].text if response.content else "מצטער, לא הצלחתי להבין. אנא נסה שוב."
             
             # Add form links if relevant
             bot_response = self.add_form_links_if_needed(bot_response)
@@ -298,7 +299,7 @@ class BotContext:
             "\n\nאין לראות במידע המוצג המלצה או ייעוץ להשקעה.")
         return f"{text}{disclaimer}"
 
-def contains_restricted_info(self, text: str) -> bool:
+    def contains_restricted_info(self, text: str) -> bool:
         """Check if text contains restricted information"""
         restricted_patterns = [
             r'\d+%',  # Any percentage
@@ -310,7 +311,7 @@ def contains_restricted_info(self, text: str) -> bool:
         ]
         return any(re.search(pattern, text) for pattern in restricted_patterns)
 
-def format_response(self, response: str) -> str:
+    def format_response(self, response: str) -> str:
         """Format and enhance the response"""
         try:
             # Add emojis based on content

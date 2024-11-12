@@ -45,67 +45,73 @@ class EnhancedBotContext(BotContext):
     def __init__(self):
         super().__init__()
         self.document_processor = DocumentProcessor()
-        self.client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+
+    def _get_system_prompt(self) -> str:
+        """Override system prompt to include document processor info"""
+        # Get relevant knowledge
+        company_info = self.document_processor.get_core_knowledge("company")
+        product_info = self.document_processor.get_core_knowledge("product")
+        advantages = self.document_processor.get_core_knowledge("advantages")
         
-    def get_response(self, prompt, db_manager, conversation_id):
+        return f"""אתה נציג שיווק השקעות מקצועי ומנוסה של מובנה גלובל, עם הבנה עמוקה במוצרים פיננסיים.
+
+        מידע על החברה:
+        {company_info}
+
+        מידע על המוצרים:
+        {product_info}
+
+        יתרונות מרכזיים:
+        {advantages}
+
+        הנחיות חשובות:
+        1. תן הסברים מקצועיים ומעמיקים, אבל בשפה ברורה
+        2. אסור לציין אחוזי תשואה או ריבית ספציפיים ללא חתימת הסכם
+        3. הדגש את היתרונות הייחודיים:
+           - נזילות יומית עם מחיר מהמנפיק
+           - העסקה ישירה מול הבנק
+           - המוצר בחשבון הבנק של הלקוח
+        4. התאם את רמת ההסבר לשאלה
+        5. השתמש בדוגמאות להמחשה
+        6. הוסף אימוג'י אחד מתאים בסוף
+
+        ענה בצורה טבעית ומקצועית, כמו יועץ השקעות מנוסה שמסביר ללקוח."""
+
+    def _get_claude_response(self, prompt: str, db_manager, conversation_id: str) -> str:
+        """Override to include document processor info in the response"""
         try:
             # Get conversation history
             conversation_history = db_manager.get_conversation_history(conversation_id)
             history_text = "\n".join([f"{'לקוח' if msg[0] == 'user' else 'נציג'}: {msg[1]}" for msg in conversation_history[-3:]])
             
-            # Get relevant knowledge
-            company_info = self.document_processor.get_core_knowledge("company")
-            product_info = self.document_processor.get_core_knowledge("product")
-            advantages = self.document_processor.get_core_knowledge("advantages")
-            
             # Get additional relevant info from documents
             relevant_info = self.document_processor.query_knowledge(prompt)
             doc_info = "\n".join(relevant_info) if relevant_info else ""
             
-            # Prepare system prompt
-            system_prompt = f"""אתה נציג שיווק השקעות מקצועי ומנוסה של מובנה גלובל, עם הבנה עמוקה במוצרים פיננסיים.
-
-            מידע על החברה:
-            {company_info}
-
-            מידע על המוצרים:
-            {product_info}
-
-            יתרונות מרכזיים:
-            {advantages}
-
-            מידע נוסף מהמסמכים:
-            {doc_info}
-
-            היסטוריית השיחה האחרונה:
-            {history_text}
-
-            הנחיות חשובות:
-            1. תן הסברים מקצועיים ומעמיקים, אבל בשפה ברורה
-            2. אסור לציין אחוזי תשואה או ריבית ספציפיים ללא חתימת הסכם
-            3. הדגש את היתרונות הייחודיים:
-               - נזילות יומית עם מחיר מהמנפיק
-               - העסקה ישירה מול הבנק
-               - המוצר בחשבון הבנק של הלקוח
-            4. התאם את רמת ההסבר לשאלה
-            5. השתמש בדוגמאות להמחשה
-            6. הוסף אימוג'י אחד מתאים בסוף
-
-            ענה בצורה טבעית ומקצועית, כמו יועץ השקעות מנוסה שמסביר ללקוח."""
+            # Add document info to system prompt
+            system_prompt = self._get_system_prompt()
+            if doc_info:
+                system_prompt += f"\n\nמידע נוסף מהמסמכים:\n{doc_info}"
+            if history_text:
+                system_prompt += f"\n\nהיסטוריית השיחה האחרונה:\n{history_text}"
 
             # Get response from Claude
             response = self.client.messages.create(
+                messages=[{"role": "user", "content": prompt}],
                 model="claude-3-opus-20240229",
                 max_tokens=800,
                 temperature=0.7,
-                system=system_prompt,
-                messages=[{
-                    "role": "user",
-                    "content": prompt
-                }]
+                system=system_prompt
             )
 
             bot_response = response.content[0].text if response.content else "מצטער, לא הצלחתי להבין. אנא נסה שוב."
+            
+            # Add form links if relevant
+            bot_response = self.add_form_links_if_needed(bot_response)
+            
+            # Add legal disclaimer if needed
+            if self._needs_legal_disclaimer(bot_response):
+                bot_response = self._add_legal_disclaimer(bot_response)
             
             # Save messages
             db_manager.save_message(conversation_id, "user", prompt)
@@ -114,7 +120,7 @@ class EnhancedBotContext(BotContext):
             return bot_response
 
         except Exception as e:
-            logging.error(f"Error in get_response: {str(e)}")
+            logging.error(f"Claude API error: {str(e)}")
             return "מצטער, אירעה שגיאה. אנא נסה שוב."
 
 def main():
