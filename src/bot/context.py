@@ -224,15 +224,16 @@ class BotContext:
             system_prompt = self._get_system_prompt()
             
             # Get response from Claude
-            response = self.client.messages.create(
-                messages=[{"role": "user", "content": prompt}],
+            response = self.client.create(
                 model="claude-3-opus-20240229",
                 max_tokens=800,
-                system=system_prompt
+                temperature=0.7,
+                system=system_prompt,
+                prompt=prompt
             )
             
             # Get the response text from the new API structure
-            bot_response = response.content[0].text if response.content else "מצטער, לא הצלחתי להבין. אנא נסה שוב."
+            bot_response = response.completion if hasattr(response, 'completion') else "מצטער, לא הצלחתי להבין. אנא נסה שוב."
             
             # Add form links if relevant
             bot_response = self.add_form_links_if_needed(bot_response)
