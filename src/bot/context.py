@@ -1,11 +1,11 @@
 import yaml
 import logging
-import anthropic
 import os
 import re
 from typing import Dict, Optional, List, Tuple
 from datetime import datetime
 from dotenv import load_dotenv
+from anthropic import Client
 
 # Load environment variables
 load_dotenv()
@@ -16,7 +16,7 @@ class BotContext:
         self.config = self.load_knowledge_base()
         
         # Initialize Anthropic client with API key from environment
-        self.client = anthropic.Anthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
+        self.client = Client(api_key=os.getenv('ANTHROPIC_API_KEY'))
         logging.info("Anthropic client initialized successfully")
         
         self._load_responses_cache()
@@ -220,20 +220,34 @@ class BotContext:
     def _get_claude_response(self, prompt: str, db_manager, conversation_id: str) -> str:
         """Get response from Claude API"""
         try:
+            # Get conversation history
+            conversation_history = db_manager.get_conversation_history(conversation_id)
+            history_text = "\n".join([f"{'לקוח' if msg[0] == 'user' else 'נציג'}: {msg[1]}" for msg in conversation_history[-3:]])
+            
             # Prepare system prompt
             system_prompt = self._get_system_prompt()
-            
-            # Get response from Claude
-            response = self.client.create(
+            if history_text:
+                system_prompt += f"\n\nהיסטוריית השיחה האחרונה:\n{history_text}"
+
+            # Log API call details for debugging
+            logging.info(f"Using API Key: {os.getenv('ANTHROPIC_API_KEY')[:10]}...")
+            logging.info(f"Sending prompt: {prompt}")
+
+            # Get response from Claude with updated format
+            response = self.client.messages.create(
                 model="claude-3-opus-20240229",
                 max_tokens=800,
                 temperature=0.7,
-                system=system_prompt,
-                prompt=prompt
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt}
+                ]
             )
+
+            logging.info(f"Received response from Claude: {response}")
             
-            # Get the response text from the new API structure
-            bot_response = response.completion if hasattr(response, 'completion') else "מצטער, לא הצלחתי להבין. אנא נסה שוב."
+            # Extract response from the new API format
+            bot_response = response.content[0].text if response.content else "מצטער, לא הצלחתי להבין. אנא נסה שוב."
             
             # Add form links if relevant
             bot_response = self.add_form_links_if_needed(bot_response)
@@ -249,7 +263,7 @@ class BotContext:
             return bot_response
             
         except Exception as e:
-            logging.error(f"Claude API error: {str(e)}")
+            logging.error(f"Claude API error: {str(e)}", exc_info=True)
             return "מצטער, אירעה שגיאה. אנא נסה שוב."
 
     def _get_system_prompt(self) -> str:
