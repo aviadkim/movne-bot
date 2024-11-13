@@ -6,14 +6,12 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of the application
-COPY . .
+# Copy the application code
+COPY api.py .
+COPY src/ src/
 
 # Create necessary directories
 RUN mkdir -p database config logs
 
-# Set environment variables
-ENV PORT=8080
-
 # Run the FastAPI application
-CMD ["python", "-m", "uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8080"]
