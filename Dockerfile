@@ -8,6 +8,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+# Create a script to run Streamlit with the correct port
+RUN echo '#!/bin/bash\nstreamlit run --server.port $(($PORT)) movne_bot.py' > start.sh
+RUN chmod +x start.sh
+
 EXPOSE 8080
 
-CMD ["python", "movne_bot.py"]
+CMD ["./start.sh"]
