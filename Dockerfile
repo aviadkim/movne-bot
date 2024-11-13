@@ -6,7 +6,7 @@ WORKDIR /app
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     build-essential \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/list/*
 
 # Copy requirements first for better caching
 COPY requirements.txt .
@@ -21,5 +21,8 @@ RUN mkdir -p database config logs
 # Make sure the application user has write permissions
 RUN chmod -R 777 database logs config
 
+# Set default port
+ENV PORT=8080
+
 # Run the FastAPI application
-CMD uvicorn api:app --host 0.0.0.0 --port ${PORT:-8080}
+CMD uvicorn api:app --host 0.0.0.0 --port $PORT
