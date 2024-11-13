@@ -27,4 +27,9 @@ logs/
 
 # Project specific
 test_anthropic.py
-config/*.yaml
+movne-chat-widget.php
+movne_bot.py
+
+# Other
+forms.db
+movne_chat.db

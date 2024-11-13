@@ -1,0 +1,23 @@
+required_disclaimers:
+  - "אין לראות במידע המוצג המלצה או ייעוץ להשקעה"
+  - "ההשקעה במוצרים מובנים כרוכה בסיכונים. יש לקרוא את תנאי המוצר בעיון"
+  - "תשואות עבר אינן מבטיחות תשואות עתידיות"
+  - "החברה בעלת רישיון שיווק השקעות ולא רישיון ייעוץ השקעות"
+
+regulatory_requirements:
+  - investment_warning: true
+  - risk_disclosure: true
+  - license_disclosure: true
+  - documentation: true
+
+marketing_restrictions:
+  - no_guaranteed_returns: true
+  - no_past_performance_emphasis: true
+  - clear_risk_disclosure: true
+  - complete_product_terms: true
+
+document_requirements:
+  - "טופס הצהרת לקוח"
+  - "מסמך גילוי נאות"
+  - "הסכם התקשרות"
+  - "טופס בירור צרכים"

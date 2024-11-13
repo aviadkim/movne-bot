@@ -1,12 +1,12 @@
-import streamlit as st
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime
 import uuid
 import logging
 import sys
-import time
+import os
 from src.database.models import DatabaseManager
 from src.bot.context import BotContext
-import os
 from dotenv import load_dotenv
 from document_processor import DocumentProcessor
 import anthropic
@@ -15,31 +15,24 @@ import re
 # Load environment variables
 load_dotenv()
 
-# Configure logging for Heroku
+# Configure logging for FastAPI
 logging.basicConfig(
     stream=sys.stdout,
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
-def set_page_style():
-    st.markdown("""
-    <style>
-    .main { direction: rtl; }
-    .stChatMessage { direction: rtl; text-align: right; }
-    .stChatInput { direction: rtl; }
-    .stMarkdown { direction: rtl; }
-    </style>
-    """, unsafe_allow_html=True)
+# Initialize FastAPI app
+app = FastAPI(title="Movne Global Bot API")
 
-def create_header():
-    st.markdown("""
-    <div style='text-align: right; direction: rtl;'>
-    <h1>מובנה גלובל</h1>
-    <h3>חברה לשיווק השקעות</h3>
-    <p>בעלת רישיון משווק השקעות מטעם רשות ניירות ערך</p>
-    </div>
-    """, unsafe_allow_html=True)
+# Enable CORS for frontend access
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 class EnhancedBotContext(BotContext):
     def __init__(self):
@@ -48,7 +41,6 @@ class EnhancedBotContext(BotContext):
 
     def _get_system_prompt(self) -> str:
         """Override system prompt to include document processor info"""
-        # Get relevant knowledge
         company_info = self.document_processor.get_core_knowledge("company")
         product_info = self.document_processor.get_core_knowledge("product")
         advantages = self.document_processor.get_core_knowledge("advantages")
@@ -123,59 +115,35 @@ class EnhancedBotContext(BotContext):
             logging.error(f"Claude API error: {str(e)}")
             return "מצטער, אירעה שגיאה. אנא נסה שוב."
 
-def main():
+# Initialize database manager and bot context
+db_manager = DatabaseManager()
+bot_context = EnhancedBotContext()
+
+@app.post("/chat/")
+async def chat(prompt: str, conversation_id: str = None):
+    """
+    Endpoint to handle chat interactions.
+    If conversation_id is not provided, a new one is created.
+    """
     try:
-        # Initialize components
-        db_manager = DatabaseManager()
-        bot_context = EnhancedBotContext()
+        # Generate a new conversation ID if not provided
+        if not conversation_id:
+            conversation_id = str(uuid.uuid4())
+            db_manager.create_conversation_if_not_exists(conversation_id)
+        
+        # Log the received prompt
+        logging.info(f"Received prompt: {prompt}")
 
-        # Page setup
-        st.set_page_config(page_title="מובנה גלובל - שיווק השקעות", layout="wide")
-        set_page_style()
-        create_header()
+        # Get bot response
+        response = bot_context._get_claude_response(prompt, db_manager, conversation_id)
 
-        # Session state
-        if 'conversation_id' not in st.session_state:
-            st.session_state.conversation_id = str(uuid.uuid4())
-            db_manager.create_conversation_if_not_exists(st.session_state.conversation_id)
-
-        if 'messages' not in st.session_state:
-            st.session_state.messages = []
-
-        # Chat interface
-        for message in st.session_state.messages:
-            with st.chat_message(message["role"]):
-                st.markdown(message["content"])
-
-        if prompt := st.chat_input("איך אוכל לעזור לך היום?"):
-            logging.info(f"Received prompt: {prompt}")
-
-            # Add user message
-            st.session_state.messages.append({"role": "user", "content": prompt})
-            with st.chat_message("user"):
-                st.markdown(prompt)
-
-            # Get and display bot response
-            with st.chat_message("assistant"):
-                try:
-                    response = bot_context.get_response(
-                        prompt,
-                        db_manager,
-                        st.session_state.conversation_id
-                    )
-                    st.markdown(response)
-                    st.session_state.messages.append({
-                        "role": "assistant",
-                        "content": response
-                    })
-                except Exception as e:
-                    error_msg = "מצטער, אירעה שגיאה. אנא נסה שוב."
-                    st.error(error_msg)
-                    logging.error(f"Error generating response: {str(e)}", exc_info=True)
+        # Return the response with conversation ID
+        return {
+            "conversation_id": conversation_id,
+            "response": response
+        }
 
     except Exception as e:
-        st.error("אירעה שגיאה בטעינת המערכת. אנא רענן את הדף.")
-        logging.error(f"System error: {str(e)}", exc_info=True)
+        logging.error(f"Error generating response: {str(e)}")
+        raise HTTPException(status_code=500, detail="מצטער, אירעה שגיאה. אנא נסה שוב.")
 
-if __name__ == "__main__":
-    main()
