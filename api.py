@@ -1,6 +1,7 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from pydantic import BaseModel, Field, constr
 from src.bot.context import BotContext
 from src.database.models import DatabaseManager
 import uvicorn
@@ -8,50 +9,96 @@ import os
 from dotenv import load_dotenv
 import uuid
 import logging
+from typing import Optional
+from fastapi.security import APIKeyHeader
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("api.log"),
+        logging.StreamHandler()
+    ]
 )
+
+logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
+PORT = int(os.getenv("PORT", 8080))
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "").split(",")
+API_KEY = os.getenv("API_KEY")
 
-app = FastAPI(title="Movne Bot API")
+if not API_KEY:
+    raise ValueError("API_KEY environment variable is required")
 
-# Add CORS middleware
+app = FastAPI(
+    title="Movne Bot API",
+    description="API for Movne Bot chat interactions",
+    version="1.0.0"
+)
+
+# Security middleware
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*"])
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allows all origins
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],  # Allows all methods
-    allow_headers=["*"],  # Allows all headers
+    allow_methods=["POST", "GET"],
+    allow_headers=["*"],
 )
 
 # Initialize components
 db_manager = DatabaseManager()
 bot_context = BotContext()
 
+# Models
 class ChatRequest(BaseModel):
-    message: str
-    conversation_id: str = None
+    message: str = Field(
+        ..., 
+        min_length=1, 
+        max_length=4000, 
+        description="User message"
+    )
+    conversation_id: Optional[str] = Field(None, description="Unique conversation identifier")
 
 class ChatResponse(BaseModel):
     response: str
     conversation_id: str
 
-@app.post("/api/chat", response_model=ChatResponse)
-async def chat_endpoint(request: ChatRequest):
+class ErrorResponse(BaseModel):
+    detail: str
+
+# Security
+api_key_header = APIKeyHeader(name="X-API-Key")
+
+async def verify_api_key(api_key: str = Depends(api_key_header)):
+    if api_key != API_KEY:
+        raise HTTPException(
+            status_code=403,
+            detail="Invalid API key"
+        )
+    return api_key
+
+# Routes
+@app.post("/api/chat", 
+         response_model=ChatResponse,
+         responses={
+             400: {"model": ErrorResponse},
+             500: {"model": ErrorResponse}
+         })
+async def chat_endpoint(
+    request: ChatRequest,
+    api_key: str = Depends(verify_api_key)
+):
     try:
-        # Generate conversation ID if not provided
         conversation_id = request.conversation_id or str(uuid.uuid4())
+        
+        logger.info(f"Processing chat request - Conversation ID: {conversation_id}")
         
         # Ensure conversation exists
         db_manager.create_conversation_if_not_exists(conversation_id)
-        
-        # Log incoming request
-        logging.info(f"Received message: {request.message[:50]}...")
         
         # Get bot response
         response = bot_context.get_response(
@@ -60,25 +107,33 @@ async def chat_endpoint(request: ChatRequest):
             conversation_id
         )
         
+        logger.info(f"Successfully processed chat request - Conversation ID: {conversation_id}")
+        
         return ChatResponse(
             response=response,
             conversation_id=conversation_id
         )
     except Exception as e:
-        logging.error(f"Error processing request: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error in chat_endpoint: {str(e)}", exc_info=True)
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(
+            status_code=500,
+            detail="Internal server error occurred. Please try again later."
+        )
 
 @app.get("/health")
-async def health_check():
+async def health_check(api_key: str = Depends(verify_api_key)):
     try:
         # Test database connection
-        db_manager.create_conversation_if_not_exists(str(uuid.uuid4()))
+        test_conversation_id = str(uuid.uuid4())
+        db_manager.create_conversation_if_not_exists(test_conversation_id)
         
         # Test Anthropic API
-        bot_context.client.messages.create(
-            messages=[{"role": "user", "content": "test"}],
+        response = bot_context.client.messages.create(
             model="claude-3-opus-20240229",
-            max_tokens=10
+            max_tokens=10,
+            messages=[{"role": "user", "content": "test"}]
         )
         
         return {
@@ -87,9 +142,12 @@ async def health_check():
             "anthropic_api": "connected"
         }
     except Exception as e:
-        logging.error(f"Health check failed: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Health check failed: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Health check failed: {str(e)}"
+        )
 
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", 8080))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    logger.info(f"Starting server on port {PORT}")
+    uvicorn.run(app, host="0.0.0.0", port=PORT)
