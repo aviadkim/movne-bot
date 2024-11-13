@@ -21,9 +21,5 @@ RUN mkdir -p database config logs
 # Make sure the application user has write permissions
 RUN chmod -R 777 database logs config
 
-# Run the FastAPI application if API_ONLY is set, otherwise run Streamlit
-CMD if [ "$API_ONLY" = "true" ]; then \
-        uvicorn api:app --host 0.0.0.0 --port "$PORT"; \
-    else \
-        streamlit run movne-chat-widget.php --server.port "$PORT" --server.address 0.0.0.0; \
-    fi
+# Run the FastAPI application
+CMD uvicorn api:app --host 0.0.0.0 --port ${PORT:-8080}
