@@ -1,11 +1,11 @@
 import yaml
 import logging
+import anthropic
 import os
 import re
 from typing import Dict, Optional, List, Tuple
 from datetime import datetime
 from dotenv import load_dotenv
-from anthropic import Client
 
 # Load environment variables
 load_dotenv()
@@ -16,7 +16,7 @@ class BotContext:
         self.config = self.load_knowledge_base()
         
         # Initialize Anthropic client with API key from environment
-        self.client = Client(api_key=os.getenv('ANTHROPIC_API_KEY'))
+        self.client = anthropic.Anthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
         logging.info("Anthropic client initialized successfully")
         
         self._load_responses_cache()
@@ -27,17 +27,25 @@ class BotContext:
             format='%(asctime)s - %(levelname)s - %(message)s'
         )
 
-        # Form URLs with original format that was working
+        # הוספת קישורים לטפסים
         self.forms_urls = {
             'qualified_investor': "https://movne-global.streamlit.app/הצהרת_משקיע_כשיר",
             'marketing_agreement': "https://movne-global.streamlit.app/הסכם_שיווק_השקעות"
         }
         
-        # Returns related keywords
+        # הגדרת מילות מפתח לזיהוי שאלות על תשואות
         self.returns_keywords = [
             'תשואה', 'תשואות', 'ריבית', 'קופון', 'רווח', 'רווחים', 
             'החזר', 'אחוזים', 'תשלום תקופתי'
         ]
+        
+        # הגדרת קריטריונים למשקיע כשיר
+        self.qualified_investor_criteria = """
+        משקיע כשיר הוא מי שעומד באחד מהתנאים הבאים:
+        1. השווי הכולל של הנכסים הנזילים שבבעלותו עולה על 8,364,177 ₪
+        2. הכנסתו השנתית בכל אחת מהשנתיים האחרונות עולה על 1,254,627 ₪ (או 1,881,940 ₪ להכנסת התא המשפחתי)
+        3. השווי הכולל של נכסיו הנזילים עולה על 5,227,610 ₪ וגם הכנסתו השנתית עולה על 627,313 ₪ (או 940,969 ₪ לתא משפחתי)
+        """
 
     def _load_responses_cache(self):
         """Load and cache common responses"""
@@ -84,115 +92,20 @@ class BotContext:
         try:
             logging.info(f"Getting response for prompt: {prompt}")
             
-            # Check for returns/rates related questions
-            if self.is_returns_question(prompt):
-                return self.handle_returns_inquiry(prompt, db_manager, conversation_id)
-
-            # Check for agreement request
-            if self.is_agreement_request(prompt):
-                return self.handle_agreement_request()
-
-            # Try cached response
+            # Try cached response first
             quick_response = self._get_cached_response(prompt)
             if quick_response:
+                logging.info("Using cached response")
                 db_manager.save_message(conversation_id, "user", prompt)
                 db_manager.save_message(conversation_id, "assistant", quick_response)
                 return quick_response
 
-            # Get normal Claude response
+            # Handle special cases and get Claude response
             return self._get_claude_response(prompt, db_manager, conversation_id)
             
         except Exception as e:
             logging.error(f"Error in get_response: {str(e)}")
             return "מצטער, אירעה שגיאה. אנא נסה שוב."
-
-    def is_returns_question(self, text: str) -> bool:
-        """Check if question is about returns"""
-        return any(keyword in text.lower() for keyword in self.returns_keywords)
-
-    def is_agreement_request(self, text: str) -> bool:
-        """Check if request is about agreement"""
-        agreement_keywords = ['הסכם', 'חוזה', 'התקשרות', 'טופס', 'רישום']
-        return any(keyword in text.lower() for keyword in agreement_keywords)
-
-    def handle_returns_inquiry(self, prompt: str, db_manager, conversation_id: str) -> str:
-        """Handle returns related questions"""
-        conversation_history = db_manager.get_conversation_history(conversation_id)
-        
-        # Check if already asked about qualified investor status
-        qualification_asked = any(
-            "האם אתה משקיע כשיר" in msg[1] 
-            for msg in conversation_history 
-            if msg[0] == 'assistant'
-        )
-        
-        if not qualification_asked:
-            response = """
-            לפני שנוכל לדבר על תשואות ספציפיות, 
-            כחברה המפוקחת על ידי רשות ניירות ערך, עלי לוודא האם אתה משקיע כשיר.
-            
-            האם אתה עומד באחד מהתנאים הבאים:
-            1. השווי הכולל של הנכסים הנזילים שבבעלותך עולה על 8,364,177 ₪
-            2. הכנסתך השנתית בשנתיים האחרונות עולה על 1,254,627 ₪
-            3. השווי הכולל של נכסיך הנזילים עולה על 5,227,610 ₪ וגם הכנסתך השנתית מעל 627,313 ₪
-
-            האם אתה עומד באחד מהתנאים הללו? 🤔
-            """
-        else:
-            # Check last response after qualification question
-            last_question_index = max(i for i, msg in enumerate(conversation_history) 
-                                    if msg[0] == 'assistant' and "האם אתה משקיע כשיר" in msg[1])
-            
-            if last_question_index < len(conversation_history) - 1:
-                user_response = conversation_history[last_question_index + 1][1].lower()
-                if "כן" in user_response:
-                    response = f"""
-                    מצוין! אנא מלא את טופס הצהרת המשקיע הכשיר בקישור הבא:
-                    {self.forms_urls['qualified_investor']}
-                    
-                    לאחר מילוי הטופס נשמח לשלוח לך במייל את כל המידע המפורט על התשואות והמוצרים שלנו.
-                    האם תרצה להשאיר את כתובת המייל שלך? 📧
-                    """
-                else:
-                    response = f"""
-                    תודה על הכנות. אני ממליץ שנתחיל בחתימה על הסכם שיווק השקעות:
-                    {self.forms_urls['marketing_agreement']}
-                    
-                    ההסכם יעזור לנו:
-                    • להכיר טוב יותר את הצרכים שלך
-                    • להבין את מטרות ההשקעה שלך
-                    • לקבוע את פרופיל הסיכון המתאים לך
-                    
-                    לאחר מילוי ההסכם, נשמח לקבוע פגישה אישית להתאמת מוצר מושלם עבורך.
-                    
-                    האם יש משהו נוסף שתרצה לדעת על תהליך ההתקשרות? 🤝
-                    """
-            else:
-                response = self._get_claude_response(prompt, db_manager, conversation_id)
-
-        db_manager.save_message(conversation_id, "user", prompt)
-        db_manager.save_message(conversation_id, "assistant", response)
-        return response
-
-    def handle_agreement_request(self) -> str:
-        """Handle agreement related requests"""
-        return f"""
-        אשמח להפנות אותך להסכם השיווק שלנו:
-        {self.forms_urls['marketing_agreement']}
-        
-        ההסכם כולל:
-        • פרטים אישיים בסיסיים
-        • שאלון הכרת לקוח
-        • הגדרת מטרות השקעה
-        • בחירת פרופיל סיכון
-        
-        לאחר מילוי ההסכם נוכל:
-        1. להתאים עבורך מוצר מושלם
-        2. לקבוע פגישה אישית
-        3. לדבר על פרטים ספציפיים
-        
-        האם יש משהו שתרצה לדעת על ההסכם לפני שתתחיל למלא? 📝
-        """
 
     def _get_cached_response(self, prompt: str) -> Optional[str]:
         """Get response from cache if available"""
@@ -217,40 +130,114 @@ class BotContext:
             logging.error(f"Error in cached response: {str(e)}")
             return None
 
-    def _get_claude_response(self, prompt: str, db_manager, conversation_id: str) -> str:
-        """Get response from Claude API"""
-        try:
-            # Get conversation history
-            conversation_history = db_manager.get_conversation_history(conversation_id)
-            history_text = "\n".join([f"{'לקוח' if msg[0] == 'user' else 'נציג'}: {msg[1]}" for msg in conversation_history[-3:]])
+    def is_question_requires_qualification(self, question: str) -> bool:
+        """בדיקה אם השאלה דורשת אימות משקיע כשיר"""
+        return any(term in question.lower() for term in self.returns_keywords)
+
+    def get_qualification_check_response(self) -> str:
+        """תשובה ללקוח ששאל על תשואות"""
+        return f"""
+        אשמח לספק לך מידע מפורט על התשואות והמוצרים שלנו.
+        
+        כחברה המפוקחת על ידי רשות ניירות ערך, עלינו לוודא תחילה האם אתה עומד בקריטריונים של משקיע כשיר.
+        
+        האם אתה משקיע כשיר? 
+        
+        {self.qualified_investor_criteria}
+        """
+
+    def handle_investor_response(self, is_qualified: bool) -> str:
+        """טיפול בתשובת הלקוח לגבי היותו משקיע כשיר"""
+        if is_qualified:
+            return f"""
+            מצוין! על מנת שנוכל להמשיך, אנא מלא את טופס הצהרת המשקיע הכשיר בקישור הבא:
+            {self.forms_urls['qualified_investor']}
             
+            לאחר מילוי הטופס, נשמח לשלוח לך במייל מידע מפורט על המוצרים והתשואות שלנו.
+            
+            האם תרצה להשאיר את כתובת המייל שלך? 📧
+            """
+        else:
+            return f"""
+            תודה על הכנות. אני ממליץ להתחיל בחתימה על הסכם שיווק השקעות כדי שנוכל להכיר אותך טוב יותר:
+            {self.forms_urls['marketing_agreement']}
+            
+            ההסכם כולל:
+            - פרטי לקוח בסיסיים
+            - שאלון להבנת צרכי ההשקעה שלך
+            - מדיניות השקעות
+            - פרופיל סיכון
+            
+            לאחר חתימה על ההסכם, נשמח לקבוע פגישה אישית להכרות מעמיקה יותר ולהתאים עבורך את הפתרון המושלם.
+            
+            האם יש משהו נוסף שתרצה לדעת על תהליך ההתקשרות? 🤝
+            """
+
+    def _get_claude_response(self, prompt: str, db_manager, conversation_id: str) -> str:
+        """Get response from Claude API with enhanced logic"""
+        try:
+            # בדיקה אם השאלה קשורה לתשואות
+            if self.is_question_requires_qualification(prompt):
+                conversation_history = db_manager.get_conversation_history(conversation_id)
+                
+                # בדיקה אם כבר שאלנו על משקיע כשיר
+                already_asked = any("האם אתה משקיע כשיר" in msg[1] 
+                                  for msg in conversation_history 
+                                  if msg[0] == 'assistant')
+                
+                if not already_asked:
+                    response = self.get_qualification_check_response()
+                    db_manager.save_message(conversation_id, "user", prompt)
+                    db_manager.save_message(conversation_id, "assistant", response)
+                    return response
+                
+                # בדיקה אם קיבלנו תשובה לשאלת משקיע כשיר
+                last_question_index = max(i for i, msg in enumerate(conversation_history) 
+                                        if msg[0] == 'assistant' and "האם אתה משקיע כשיר" in msg[1])
+                
+                if last_question_index < len(conversation_history) - 1:
+                    user_response = conversation_history[last_question_index + 1][1].lower()
+                    if "כן" in user_response:
+                        response = self.handle_investor_response(True)
+                    elif "לא" in user_response:
+                        response = self.handle_investor_response(False)
+                    else:
+                        # Continue with normal response if no clear answer
+                        return self._get_normal_claude_response(prompt, db_manager, conversation_id)
+                        
+                    db_manager.save_message(conversation_id, "user", prompt)
+                    db_manager.save_message(conversation_id, "assistant", response)
+                    return response
+            
+            # הוספת לוגיקה לזיהוי בקשת הסכם
+            if any(word in prompt.lower() for word in ['הסכם', 'חוזה', 'התקשרות']):
+                response = self.handle_investor_response(False)  # Use same function for agreement info
+                db_manager.save_message(conversation_id, "user", prompt)
+                db_manager.save_message(conversation_id, "assistant", response)
+                return response
+            
+            # Default to normal Claude response
+            return self._get_normal_claude_response(prompt, db_manager, conversation_id)
+            
+        except Exception as e:
+            logging.error(f"Error in _get_claude_response: {str(e)}")
+            return "מצטער, אירעה שגיאה. אנא נסה שוב."
+
+    def _get_normal_claude_response(self, prompt: str, db_manager, conversation_id: str) -> str:
+        """Get standard response from Claude"""
+        try:
             # Prepare system prompt
             system_prompt = self._get_system_prompt()
-            if history_text:
-                system_prompt += f"\n\nהיסטוריית השיחה האחרונה:\n{history_text}"
-
-            # Log API call details for debugging
-            logging.info(f"Using API Key: {os.getenv('ANTHROPIC_API_KEY')[:10]}...")
-            logging.info(f"Sending prompt: {prompt}")
-
-            # Get response from Claude with updated format
+            
+            # Get response from Claude
             response = self.client.messages.create(
+                messages=[{"role": "user", "content": prompt}],
                 model="claude-3-opus-20240229",
                 max_tokens=800,
-                temperature=0.7,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": prompt}
-                ]
+                system=system_prompt
             )
-
-            logging.info(f"Received response from Claude: {response}")
             
-            # Extract response from the new API format
-            bot_response = response.content[0].text if response.content else "מצטער, לא הצלחתי להבין. אנא נסה שוב."
-            
-            # Add form links if relevant
-            bot_response = self.add_form_links_if_needed(bot_response)
+            bot_response = response.content[0].text if hasattr(response, 'content') else "מצטער, לא הצלחתי להבין. אנא נסה שוב."
             
             # Add legal disclaimer if needed
             if self._needs_legal_disclaimer(bot_response):
@@ -263,7 +250,7 @@ class BotContext:
             return bot_response
             
         except Exception as e:
-            logging.error(f"Claude API error: {str(e)}", exc_info=True)
+            logging.error(f"Claude API error: {str(e)}")
             return "מצטער, אירעה שגיאה. אנא נסה שוב."
 
     def _get_system_prompt(self) -> str:
@@ -284,21 +271,7 @@ class BotContext:
         2. התמקד במידע כללי על החברה והמוצרים
         3. הצע פגישה רק אם הלקוח מביע עניין
         4. היה ידידותי אך מקצועי
-        5. הדגש את היתרונות הייחודיים שלנו:
-           - נזילות יומית עם מחיר מהמנפיק
-           - העסקה ישירה מול הבנק
-           - המוצר בחשבון הבנק של הלקוח
-        6. תן תשובות מעמיקות המעידות על הבנה פיננסית"""
-
-    def add_form_links_if_needed(self, response: str) -> str:
-        """Add form links if relevant"""
-        if any(word in response.lower() for word in ['הסכם', 'חוזה', 'טופס']):
-            response += f"\n\nקישור להסכם שיווק השקעות: {self.forms_urls['marketing_agreement']}"
-        
-        if 'משקיע כשיר' in response.lower():
-            response += f"\n\nקישור להצהרת משקיע כשיר: {self.forms_urls['qualified_investor']}"
-        
-        return response
+        5. תן תשובות מעמיקות המעידות על הבנה פיננסית"""
 
     def _needs_legal_disclaimer(self, text: str) -> bool:
         """Check if response needs legal disclaimer"""
@@ -326,8 +299,22 @@ class BotContext:
         ]
         return any(re.search(pattern, text) for pattern in restricted_patterns)
 
+    def is_question_requires_qualification(self, question: str) -> bool:
+        """Check if question requires investor qualification"""
+        return any(term in question.lower() for term in self.returns_keywords)
+
+    def get_conversation_context(self, conversation_history: List[Tuple[str, str]]) -> str:
+        """Get relevant context from conversation history"""
+        try:
+            recent_messages = conversation_history[-3:]  # Get last 3 messages
+            return "\n".join([f"{'לקוח' if role == 'user' else 'נציג'}: {msg}" 
+                            for role, msg in recent_messages])
+        except Exception as e:
+            logging.error(f"Error getting conversation context: {str(e)}")
+            return ""
+
     def format_response(self, response: str) -> str:
-        """Format and enhance the response"""
+        """Format the response with proper styling and structure"""
         try:
             # Add emojis based on content
             if 'פגישה' in response:
@@ -338,11 +325,14 @@ class BotContext:
                 response += ' 📈'
             elif 'חתימה' in response or 'הסכם' in response:
                 response += ' 📝'
-            elif 'תשואה' in response or 'רווח' in response:
-                response += ' 💰'
-            
+                
             return response
 
         except Exception as e:
             logging.error(f"Error formatting response: {str(e)}")
             return response
+
+    def handle_error(self, error: Exception) -> str:
+        """Handle errors gracefully"""
+        logging.error(f"Error occurred: {str(error)}")
+        return "מצטער, אירעה שגיאה. אנא נסה שוב או פנה לנציג שירות."
