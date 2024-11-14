@@ -1,10 +1,18 @@
 import re
 import uuid
 from datetime import datetime
-import streamlit as st
 import logging
 import pandas as pd
 import json
+from fastapi import APIRouter, HTTPException, Depends
+from typing import Dict, List, Optional
+from pydantic import BaseModel
+
+router = APIRouter(prefix="/leads", tags=["leads"])
+
+class LeadUpdate(BaseModel):
+    status: str
+    notes: Optional[Dict] = None
 
 class LeadTracker:
     def __init__(self, db_manager):
@@ -171,127 +179,113 @@ class LeadTracker:
             
         except Exception as e:
             logging.error(f"Failed to save lead: {str(e)}")
-            return None
+            raise HTTPException(status_code=500, detail=str(e))
         finally:
             conn.close()
 
-def show_leads_dashboard(db_manager):
-    """Display leads dashboard in Streamlit"""
-    st.sidebar.title("לידים חדשים")
-    
-    try:
-        conn = db_manager.get_connection()
-        
-        # Get leads with full query
-        leads_df = pd.read_sql_query('''
-            SELECT 
-                l.lead_id,
-                l.contact_type,
-                l.contact_value,
-                l.timestamp,
-                l.status,
-                l.agreement_status,
-                l.notes,
-                l.investor_status,
-                c.qualification_reason,
-                COUNT(m.message_id) as message_count
-            FROM leads l
-            JOIN conversations c ON l.conversation_id = c.conversation_id
-            LEFT JOIN messages m ON l.conversation_id = m.conversation_id
-            WHERE l.timestamp >= datetime('now', '-7 day')
-            GROUP BY l.lead_id, l.contact_type, l.contact_value, l.timestamp,
-                     l.status, l.agreement_status, l.notes, l.investor_status,
-                     c.qualification_reason
-            ORDER BY l.timestamp DESC
-        ''', conn)
-        
-        if not leads_df.empty:
-            # Add filters
-            status_filter = st.sidebar.multiselect(
-                "סנן לפי סטטוס",
-                options=leads_df['status'].unique()
-            )
+    def get_recent_leads(self, days: int = 7) -> List[Dict]:
+        """Get recent leads from database"""
+        try:
+            conn = self.db_manager.get_connection()
             
-            # Apply filters
-            if status_filter:
-                leads_df = leads_df[leads_df['status'].isin(status_filter)]
+            leads_df = pd.read_sql_query('''
+                SELECT 
+                    l.lead_id,
+                    l.contact_type,
+                    l.contact_value,
+                    l.timestamp,
+                    l.status,
+                    l.agreement_status,
+                    l.notes,
+                    l.investor_status,
+                    c.qualification_reason,
+                    COUNT(m.message_id) as message_count
+                FROM leads l
+                JOIN conversations c ON l.conversation_id = c.conversation_id
+                LEFT JOIN messages m ON l.conversation_id = m.conversation_id
+                WHERE l.timestamp >= datetime('now', ?)
+                GROUP BY l.lead_id, l.contact_type, l.contact_value, l.timestamp,
+                         l.status, l.agreement_status, l.notes, l.investor_status,
+                         c.qualification_reason
+                ORDER BY l.timestamp DESC
+            ''', conn, params=(f'-{days} day',))
             
-            # Display leads
-            for _, lead in leads_df.iterrows():
-                with st.sidebar.expander(f"ליד מתאריך {lead['timestamp'][:16]}"):
-                    st.write(f"סוג קשר: {lead['contact_type']}")
-                    st.write(f"פרטי קשר: {lead['contact_value']}")
-                    st.write(f"סטטוס: {lead['status']}")
-                    st.write(f"סטטוס הסכם: {lead['agreement_status']}")
-                    st.write(f"מספר הודעות: {lead['message_count']}")
-                    
-                    if lead['investor_status']:
-                        st.write(f"סטטוס משקיע: {lead['investor_status']}")
-                        if lead['qualification_reason']:
-                            st.write(f"סיבת כשירות: {lead['qualification_reason']}")
-                    
-                    # Status update
-                    new_status = st.selectbox(
-                        "עדכן סטטוס",
-                        ['חדש', 'בטיפול', 'חתם על הסכם', 'הושלם', 'לא רלוונטי'],
-                        key=f"status_{lead['lead_id']}"
-                    )
-                    
-                    if st.button("עדכן", key=f"update_{lead['lead_id']}"):
-                        c = conn.cursor()
-                        notes = json.loads(lead['notes'] or '{}')
-                        notes['last_update'] = str(datetime.now())
-                        notes['last_status'] = new_status
-                        
-                        c.execute("""
-                            UPDATE leads 
-                            SET status = ?,
-                                notes = ?
-                            WHERE lead_id = ?
-                        """, (new_status, json.dumps(notes), lead['lead_id']))
-                        conn.commit()
-                        st.success("הסטטוס עודכן!")
-                        
-                    # Export lead data
-                    if st.button("ייצא פרטי ליד", key=f"export_{lead['lead_id']}"):
-                        lead_data = lead.to_dict()
-                        st.download_button(
-                            "הורד קובץ",
-                            data=json.dumps(lead_data, ensure_ascii=False),
-                            file_name=f"lead_{lead['lead_id'][:8]}.json",
-                            mime="application/json"
-                        )
-        else:
-            st.sidebar.write("אין לידים חדשים בשבוע האחרון")
+            return leads_df.to_dict(orient='records')
             
-    except Exception as e:
-        logging.error(f"Failed to show leads dashboard: {str(e)}")
-        st.sidebar.error("אירעה שגיאה בטעינת הלידים")
-    finally:
-        if conn:
+        except Exception as e:
+            logging.error(f"Failed to get leads: {str(e)}")
+            raise HTTPException(status_code=500, detail=str(e))
+        finally:
             conn.close()
 
-def show_conversation(db_manager, conversation_id: str):
-    """Display full conversation history"""
-    try:
-        conn = db_manager.get_connection()
-        messages_df = pd.read_sql_query('''
-            SELECT role, content, timestamp
-            FROM messages
-            WHERE conversation_id = ?
-            ORDER BY timestamp
-        ''', conn, params=(conversation_id,))
-        
-        st.subheader(f"שיחה: {conversation_id[:8]}")
-        
-        for _, msg in messages_df.iterrows():
-            with st.chat_message(msg['role']):
-                st.write(msg['content'])
-                st.caption(f"{msg['timestamp'][:16]}")
+    def update_lead_status(self, lead_id: str, update: LeadUpdate) -> Dict:
+        """Update lead status and notes"""
+        try:
+            conn = self.db_manager.get_connection()
+            c = conn.cursor()
+            
+            # Get current notes
+            c.execute("SELECT notes FROM leads WHERE lead_id = ?", (lead_id,))
+            result = c.fetchone()
+            if not result:
+                raise HTTPException(status_code=404, detail="Lead not found")
                 
-    except Exception as e:
-        logging.error(f"Failed to show conversation: {str(e)}")
-        st.error("אירעה שגיאה בטעינת השיחה")
-    finally:
-        if conn:
+            current_notes = json.loads(result[0] or '{}')
+            
+            # Update notes
+            notes = update.notes or {}
+            notes.update({
+                'last_update': str(datetime.now()),
+                'last_status': update.status
+            })
+            notes.update(current_notes)  # Preserve existing notes
+            
+            # Update lead
+            c.execute("""
+                UPDATE leads 
+                SET status = ?,
+                    notes = ?
+                WHERE lead_id = ?
+            """, (update.status, json.dumps(notes), lead_id))
+            
+            conn.commit()
+            
+            return {"status": "success", "lead_id": lead_id}
+            
+        except Exception as e:
+            logging.error(f"Failed to update lead: {str(e)}")
+            raise HTTPException(status_code=500, detail=str(e))
+        finally:
             conn.close()
+
+    def get_conversation_history(self, conversation_id: str) -> List[Dict]:
+        """Get conversation history"""
+        try:
+            conn = self.db_manager.get_connection()
+            messages_df = pd.read_sql_query('''
+                SELECT role, content, timestamp
+                FROM messages
+                WHERE conversation_id = ?
+                ORDER BY timestamp
+            ''', conn, params=(conversation_id,))
+            
+            return messages_df.to_dict(orient='records')
+            
+        except Exception as e:
+            logging.error(f"Failed to get conversation: {str(e)}")
+            raise HTTPException(status_code=500, detail=str(e))
+        finally:
+            conn.close()
+
+# FastAPI router endpoints
+@router.get("/recent")
+async def get_recent_leads(days: int = 7, tracker: LeadTracker = Depends()):
+    return tracker.get_recent_leads(days)
+
+@router.put("/{lead_id}")
+async def update_lead(lead_id: str, update: LeadUpdate, tracker: LeadTracker = Depends()):
+    return tracker.update_lead_status(lead_id, update)
+
+@router.get("/conversation/{conversation_id}")
+async def get_conversation(conversation_id: str, tracker: LeadTracker = Depends()):
+    return tracker.get_conversation_history(conversation_id)

@@ -27,19 +27,20 @@ class BotContext:
             format='%(asctime)s - %(levelname)s - %(message)s'
         )
 
-        # הוספת קישורים לטפסים
+        # Update forms URLs to use FastAPI endpoints
+        base_url = os.getenv('API_BASE_URL', 'http://localhost:8080')
         self.forms_urls = {
-            'qualified_investor': "https://movne-global.streamlit.app/הצהרת_משקיע_כשיר",
-            'marketing_agreement': "https://movne-global.streamlit.app/הסכם_שיווק_השקעות"
+            'qualified_investor': f"{base_url}/forms/qualified-investor",
+            'marketing_agreement': f"{base_url}/forms/marketing-agreement"
         }
         
-        # הגדרת מילות מפתח לזיהוי שאלות על תשואות
+        # Define keywords for returns questions
         self.returns_keywords = [
             'תשואה', 'תשואות', 'ריבית', 'קופון', 'רווח', 'רווחים', 
             'החזר', 'אחוזים', 'תשלום תקופתי'
         ]
         
-        # הגדרת קריטריונים למשקיע כשיר
+        # Define qualified investor criteria
         self.qualified_investor_criteria = """
         משקיע כשיר הוא מי שעומד באחד מהתנאים הבאים:
         1. השווי הכולל של הנכסים הנזילים שבבעלותו עולה על 8,364,177 ₪
@@ -131,11 +132,11 @@ class BotContext:
             return None
 
     def is_question_requires_qualification(self, question: str) -> bool:
-        """בדיקה אם השאלה דורשת אימות משקיע כשיר"""
+        """Check if question requires investor qualification"""
         return any(term in question.lower() for term in self.returns_keywords)
 
     def get_qualification_check_response(self) -> str:
-        """תשובה ללקוח ששאל על תשואות"""
+        """Response for returns-related questions"""
         return f"""
         אשמח לספק לך מידע מפורט על התשואות והמוצרים שלנו.
         
@@ -147,7 +148,7 @@ class BotContext:
         """
 
     def handle_investor_response(self, is_qualified: bool) -> str:
-        """טיפול בתשובת הלקוח לגבי היותו משקיע כשיר"""
+        """Handle client response about qualified investor status"""
         if is_qualified:
             return f"""
             מצוין! על מנת שנוכל להמשיך, אנא מלא את טופס הצהרת המשקיע הכשיר בקישור הבא:
@@ -176,11 +177,11 @@ class BotContext:
     def _get_claude_response(self, prompt: str, db_manager, conversation_id: str) -> str:
         """Get response from Claude API with enhanced logic"""
         try:
-            # בדיקה אם השאלה קשורה לתשואות
+            # Check if question is about returns
             if self.is_question_requires_qualification(prompt):
                 conversation_history = db_manager.get_conversation_history(conversation_id)
                 
-                # בדיקה אם כבר שאלנו על משקיע כשיר
+                # Check if we already asked about qualified investor
                 already_asked = any("האם אתה משקיע כשיר" in msg[1] 
                                   for msg in conversation_history 
                                   if msg[0] == 'assistant')
@@ -191,7 +192,7 @@ class BotContext:
                     db_manager.save_message(conversation_id, "assistant", response)
                     return response
                 
-                # בדיקה אם קיבלנו תשובה לשאלת משקיע כשיר
+                # Check if we got an answer to the qualified investor question
                 last_question_index = max(i for i, msg in enumerate(conversation_history) 
                                         if msg[0] == 'assistant' and "האם אתה משקיע כשיר" in msg[1])
                 
@@ -209,7 +210,7 @@ class BotContext:
                     db_manager.save_message(conversation_id, "assistant", response)
                     return response
             
-            # הוספת לוגיקה לזיהוי בקשת הסכם
+            # Check for agreement request
             if any(word in prompt.lower() for word in ['הסכם', 'חוזה', 'התקשרות']):
                 response = self.handle_investor_response(False)  # Use same function for agreement info
                 db_manager.save_message(conversation_id, "user", prompt)
@@ -298,10 +299,6 @@ class BotContext:
             r'רווח של'
         ]
         return any(re.search(pattern, text) for pattern in restricted_patterns)
-
-    def is_question_requires_qualification(self, question: str) -> bool:
-        """Check if question requires investor qualification"""
-        return any(term in question.lower() for term in self.returns_keywords)
 
     def get_conversation_context(self, conversation_history: List[Tuple[str, str]]) -> str:
         """Get relevant context from conversation history"""

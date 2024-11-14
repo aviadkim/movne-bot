@@ -1,7 +1,9 @@
-import streamlit as st
-from datetime import datetime
+from fastapi import APIRouter, HTTPException, Query
+from datetime import datetime, date
+from typing import List, Dict, Optional
 import os
 import sys
+from pydantic import BaseModel
 
 # Add the src directory to the Python path
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -10,74 +12,114 @@ sys.path.append(src_dir)
 
 from src.database.models import DatabaseManager
 
-def view_conversations(db_manager):
-    st.title("היסטוריית שיחות 💬")
-    
-    # Get all conversations
-    conversations = db_manager.get_all_conversations()
-    
-    if not conversations:
-        st.info("אין עדיין שיחות מתועדות במערכת")
-        return
+router = APIRouter(prefix="/conversations", tags=["conversations"])
 
-    # Create filters
-    col1, col2 = st.columns(2)
-    with col1:
-        filter_leads = st.checkbox("הצג רק לידים", value=False)
-    with col2:
-        filter_date = st.date_input("סנן לפי תאריך")
-    
-    # Display conversations
-    for conv in conversations:
+class ConversationFilter(BaseModel):
+    leads_only: bool = False
+    date: Optional[date] = None
+
+class Message(BaseModel):
+    role: str
+    content: str
+    timestamp: Optional[str] = None
+
+class Conversation(BaseModel):
+    conversation_id: str
+    start_time: str
+    contact: Optional[str] = None
+    investor_status: Optional[str] = None
+    lead_captured: Optional[bool] = None
+    messages: List[Message]
+
+class ConversationViewer:
+    def __init__(self, db_manager: DatabaseManager):
+        self.db_manager = db_manager
+
+    def get_filtered_conversations(self, filter_leads: bool = False, filter_date: Optional[date] = None) -> List[Dict]:
+        """Get filtered conversations from database"""
         try:
-            # Apply filters
-            if filter_leads and not conv.get('lead_captured'):
-                continue
+            conversations = self.db_manager.get_all_conversations()
             
-            start_time = conv.get('start_time', '')
-            if not start_time:
-                continue
+            if not conversations:
+                return []
 
-            try:
-                conv_date = datetime.strptime(start_time, '%Y-%m-%d %H:%M:%S.%f').date()
-            except:
-                continue
+            filtered_conversations = []
+            for conv in conversations:
+                try:
+                    # Apply lead filter
+                    if filter_leads and not conv.get('lead_captured'):
+                        continue
+                    
+                    # Apply date filter
+                    start_time = conv.get('start_time', '')
+                    if not start_time:
+                        continue
 
-            if filter_date and conv_date != filter_date:
-                continue
-            
-            # Create a unique key for each conversation
-            conv_key = conv.get('conversation_id', str(datetime.now().timestamp()))
-            
-            with st.expander(f"שיחה מתאריך {start_time} {'👤' if conv.get('contact') else ''}", key=f"conv_{conv_key}"):
-                if conv.get('contact'):
-                    st.info(f"פרטי קשר: {conv['contact']}")
-                
-                if conv.get('investor_status'):
-                    st.success(f"סטטוס משקיע: {conv['investor_status']}")
-                
-                messages = conv.get('messages', [])
-                if messages:
+                    try:
+                        conv_date = datetime.strptime(start_time, '%Y-%m-%d %H:%M:%S.%f').date()
+                    except:
+                        continue
+
+                    if filter_date and conv_date != filter_date:
+                        continue
+                    
+                    # Format messages
+                    messages = conv.get('messages', [])
+                    formatted_messages = []
                     for msg in messages:
                         if msg.get('role') and msg.get('content'):
-                            role_emoji = "🤖" if msg['role'] == "assistant" else "👤"
-                            st.write(f"{role_emoji} **{msg['role']}**: {msg['content']}")
-                else:
-                    st.warning("אין הודעות בשיחה זו")
+                            formatted_messages.append({
+                                'role': msg['role'],
+                                'content': msg['content'],
+                                'timestamp': msg.get('timestamp')
+                            })
+                    
+                    # Format conversation
+                    formatted_conv = {
+                        'conversation_id': conv.get('conversation_id'),
+                        'start_time': start_time,
+                        'contact': conv.get('contact'),
+                        'investor_status': conv.get('investor_status'),
+                        'lead_captured': conv.get('lead_captured'),
+                        'messages': formatted_messages
+                    }
+                    
+                    filtered_conversations.append(formatted_conv)
+
+                except Exception as e:
+                    continue  # Skip conversations with errors
+
+            return filtered_conversations
 
         except Exception as e:
-            st.error(f"שגיאה בהצגת שיחה: {str(e)}")
-            continue
+            raise HTTPException(status_code=500, detail=f"Error getting conversations: {str(e)}")
 
-def run_viewer():
-    st.set_page_config(
-        page_title="מערכת צפייה בשיחות - מובנה גלובל",
-        page_icon="💬",
-        layout="wide"
-    )
-    
-    db = DatabaseManager()
-    view_conversations(db)
+# FastAPI endpoints
+@router.get("/", response_model=List[Conversation])
+async def get_conversations(
+    leads_only: bool = Query(False, description="Filter to show only leads"),
+    filter_date: Optional[date] = Query(None, description="Filter by specific date")
+):
+    """Get filtered conversations"""
+    try:
+        db = DatabaseManager()
+        viewer = ConversationViewer(db)
+        return viewer.get_filtered_conversations(leads_only, filter_date)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-if __name__ == "__main__":
-    run_viewer()
+@router.get("/{conversation_id}", response_model=Conversation)
+async def get_conversation(conversation_id: str):
+    """Get a specific conversation by ID"""
+    try:
+        db = DatabaseManager()
+        viewer = ConversationViewer(db)
+        conversations = viewer.get_filtered_conversations()
+        
+        for conv in conversations:
+            if conv['conversation_id'] == conversation_id:
+                return conv
+                
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

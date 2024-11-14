@@ -1,27 +1,17 @@
-import streamlit as st
 import pandas as pd
-import plotly.express as px
-from datetime import datetime, timedelta
+from fastapi import APIRouter, Depends, HTTPException
+from typing import List, Dict, Any
 import logging
+from datetime import datetime, timedelta
+import json
+
+router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
 class DashboardManager:
     def __init__(self, db_manager):
         self.db_manager = db_manager
 
-    def show_dashboard(self):
-        st.sidebar.title("לוח בקרה")
-        tabs = st.tabs(["סיכום", "שיחות", "לידים", "הסכמים"])
-        
-        with tabs[0]:
-            self.show_summary_tab()
-        with tabs[1]:
-            self.show_conversations_tab()
-        with tabs[2]:
-            self.show_leads_tab()
-        with tabs[3]:
-            self.show_agreements_tab()
-
-    def show_summary_tab(self):
+    def get_summary_stats(self) -> Dict[str, Any]:
         try:
             conn = self.db_manager.get_connection()
             stats = pd.read_sql_query("""
@@ -34,17 +24,6 @@ class DashboardManager:
                 LEFT JOIN leads l ON c.conversation_id = l.conversation_id
             """, conn)
             
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("סה״כ שיחות", stats['total_conversations'][0])
-            with col2:
-                st.metric("סה״כ לידים", stats['total_leads'][0])
-            with col3:
-                st.metric("הסכמים חתומים", stats['signed_agreements'][0])
-            with col4:
-                st.metric("משקיעים כשירים", stats['qualified_investors'][0])
-                
-            # Conversion trends
             trends = pd.read_sql_query("""
                 SELECT 
                     DATE(start_time) as date,
@@ -57,16 +36,17 @@ class DashboardManager:
                 ORDER BY date
             """, conn)
             
-            fig = px.line(trends, x='date', y=['conversations', 'leads', 'agreements'],
-                         title='מגמות המרה')
-            st.plotly_chart(fig)
-            
+            return {
+                "metrics": stats.to_dict(orient='records')[0],
+                "trends": trends.to_dict(orient='records')
+            }
         except Exception as e:
-            logging.error(f"Error showing summary: {str(e)}")
+            logging.error(f"Error getting summary stats: {str(e)}")
+            raise HTTPException(status_code=500, detail=str(e))
         finally:
             conn.close()
 
-    def show_conversations_tab(self):
+    def get_conversations(self) -> List[Dict[str, Any]]:
         try:
             conn = self.db_manager.get_connection()
             conversations = pd.read_sql_query("""
@@ -76,7 +56,7 @@ class DashboardManager:
                     c.investor_status,
                     c.qualification_reason,
                     COUNT(m.message_id) as messages_count,
-                    CASE WHEN l.lead_id IS NOT NULL THEN 'כן' ELSE 'לא' END as has_lead
+                    CASE WHEN l.lead_id IS NOT NULL THEN true ELSE false END as has_lead
                 FROM conversations c
                 LEFT JOIN messages m ON c.conversation_id = m.conversation_id
                 LEFT JOIN leads l ON c.conversation_id = l.conversation_id
@@ -84,32 +64,27 @@ class DashboardManager:
                 ORDER BY c.start_time DESC
             """, conn)
             
+            result = []
             for _, conv in conversations.iterrows():
-                with st.expander(f"שיחה מתאריך {conv['start_time'][:16]}"):
-                    st.write(f"סטטוס משקיע: {conv['investor_status']}")
-                    if conv['qualification_reason']:
-                        st.write(f"סיבת כשירות: {conv['qualification_reason']}")
-                    st.write(f"מספר הודעות: {conv['messages_count']}")
-                    st.write(f"יצר קשר: {conv['has_lead']}")
-                    
-                    messages = pd.read_sql_query("""
-                        SELECT role, content, timestamp
-                        FROM messages
-                        WHERE conversation_id = ?
-                        ORDER BY timestamp
-                    """, conn, params=(conv['conversation_id'],))
-                    
-                    for _, msg in messages.iterrows():
-                        with st.chat_message(msg['role']):
-                            st.write(msg['content'])
-                            st.caption(msg['timestamp'][:16])
-                            
+                messages = pd.read_sql_query("""
+                    SELECT role, content, timestamp
+                    FROM messages
+                    WHERE conversation_id = ?
+                    ORDER BY timestamp
+                """, conn, params=(conv['conversation_id'],))
+                
+                conv_dict = conv.to_dict()
+                conv_dict['messages'] = messages.to_dict(orient='records')
+                result.append(conv_dict)
+                
+            return result
         except Exception as e:
-            logging.error(f"Error showing conversations: {str(e)}")
+            logging.error(f"Error getting conversations: {str(e)}")
+            raise HTTPException(status_code=500, detail=str(e))
         finally:
             conn.close()
 
-    def show_leads_tab(self):
+    def get_leads(self) -> List[Dict[str, Any]]:
         try:
             conn = self.db_manager.get_connection()
             leads = pd.read_sql_query("""
@@ -124,29 +99,14 @@ class DashboardManager:
                 ORDER BY l.timestamp DESC
             """, conn)
             
-            if st.button("ייצא לאקסל"):
-                leads.to_excel("leads_export.xlsx", index=False)
-                st.success("הקובץ יוצא בהצלחה!")
-                
-            for _, lead in leads.iterrows():
-                with st.expander(f"ליד מתאריך {lead['timestamp'][:16]}"):
-                    cols = st.columns(3)
-                    with cols[0]:
-                        st.write(f"סוג קשר: {lead['contact_type']}")
-                        st.write(f"פרטי קשר: {lead['contact_value']}")
-                    with cols[1]:
-                        st.write(f"סטטוס משקיע: {lead['investor_status']}")
-                        st.write(f"סיבת כשירות: {lead['qualification_reason']}")
-                    with cols[2]:
-                        st.write(f"סטטוס: {lead['status']}")
-                        st.write(f"סטטוס הסכם: {lead['agreement_status']}")
-                        
+            return leads.to_dict(orient='records')
         except Exception as e:
-            logging.error(f"Error showing leads: {str(e)}")
+            logging.error(f"Error getting leads: {str(e)}")
+            raise HTTPException(status_code=500, detail=str(e))
         finally:
             conn.close()
 
-    def show_agreements_tab(self):
+    def get_agreements(self) -> List[Dict[str, Any]]:
         try:
             conn = self.db_manager.get_connection()
             agreements = pd.read_sql_query("""
@@ -161,15 +121,26 @@ class DashboardManager:
                 ORDER BY a.timestamp DESC
             """, conn)
             
-            for _, agreement in agreements.iterrows():
-                with st.expander(f"הסכם מתאריך {agreement['timestamp'][:16]}"):
-                    st.write(f"פרטי קשר: {agreement['client_contact']}")
-                    st.write(f"סטטוס משקיע: {agreement['investor_status']}")
-                    st.write(f"סטטוס הסכם: {agreement['status']}")
-                    st.text_area("תוכן ההסכם", agreement['content'], height=200)
-                    st.write(f"חתימה: {agreement['signature']}")
-                    
+            return agreements.to_dict(orient='records')
         except Exception as e:
-            logging.error(f"Error showing agreements: {str(e)}")
+            logging.error(f"Error getting agreements: {str(e)}")
+            raise HTTPException(status_code=500, detail=str(e))
         finally:
             conn.close()
+
+# FastAPI router endpoints
+@router.get("/summary")
+async def get_summary(dashboard: DashboardManager = Depends()):
+    return dashboard.get_summary_stats()
+
+@router.get("/conversations")
+async def get_conversations(dashboard: DashboardManager = Depends()):
+    return dashboard.get_conversations()
+
+@router.get("/leads")
+async def get_leads(dashboard: DashboardManager = Depends()):
+    return dashboard.get_leads()
+
+@router.get("/agreements")
+async def get_agreements(dashboard: DashboardManager = Depends()):
+    return dashboard.get_agreements()

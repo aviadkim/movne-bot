@@ -4,6 +4,9 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel, Field, constr
 from src.bot.context import BotContext
 from src.database.models import DatabaseManager
+from src.dashboard.analytics import router as analytics_router
+from src.utils.lead_tracker import router as leads_router
+from src.utils.conversation_viewer import router as conversations_router
 import uvicorn
 import os
 from dotenv import load_dotenv
@@ -11,6 +14,8 @@ import uuid
 import logging
 from typing import Optional
 from fastapi.security import APIKeyHeader
+from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.staticfiles import StaticFiles
 
 # Configure logging
 logging.basicConfig(
@@ -35,7 +40,7 @@ if not API_KEY:
 
 app = FastAPI(
     title="Movne Bot API",
-    description="API for Movne Bot chat interactions",
+    description="API for Movne Bot chat interactions, analytics, and lead management",
     version="1.0.0"
 )
 
@@ -45,7 +50,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["POST", "GET"],
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["*"],
 )
 
@@ -81,6 +86,23 @@ async def verify_api_key(api_key: str = Depends(api_key_header)):
         )
     return api_key
 
+# Include routers
+app.include_router(
+    analytics_router,
+    prefix="/api",
+    dependencies=[Depends(verify_api_key)]
+)
+app.include_router(
+    leads_router,
+    prefix="/api",
+    dependencies=[Depends(verify_api_key)]
+)
+app.include_router(
+    conversations_router,
+    prefix="/api",
+    dependencies=[Depends(verify_api_key)]
+)
+
 # Routes
 @app.post("/api/chat", 
          response_model=ChatResponse,
@@ -92,6 +114,12 @@ async def chat_endpoint(
     request: ChatRequest,
     api_key: str = Depends(verify_api_key)
 ):
+    """
+    Process a chat message and return the bot's response.
+    
+    - If no conversation_id is provided, a new one will be created
+    - Messages are saved to the database for context and analytics
+    """
     try:
         conversation_id = request.conversation_id or str(uuid.uuid4())
         
@@ -124,6 +152,13 @@ async def chat_endpoint(
 
 @app.get("/health")
 async def health_check(api_key: str = Depends(verify_api_key)):
+    """
+    Check the health status of the API and its dependencies.
+    
+    Verifies:
+    - Database connection
+    - Anthropic API connection
+    """
     try:
         # Test database connection
         test_conversation_id = str(uuid.uuid4())
@@ -147,6 +182,14 @@ async def health_check(api_key: str = Depends(verify_api_key)):
             status_code=500,
             detail=f"Health check failed: {str(e)}"
         )
+
+# Serve static files for forms
+app.mount("/forms", StaticFiles(directory="forms"), name="forms")
+
+@app.get("/")
+async def root():
+    """Redirect to API documentation"""
+    return get_swagger_ui_html(openapi_url="/openapi.json", title="Movne Bot API Documentation")
 
 if __name__ == "__main__":
     logger.info(f"Starting server on port {PORT}")
